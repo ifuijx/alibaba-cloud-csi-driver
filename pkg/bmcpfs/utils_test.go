@@ -142,7 +142,8 @@ func TestCreateVolumeResponse(t *testing.T) {
 	bmcpfsID := "fs-456"
 	volSizeBytes := int64(1024 * 1024 * 1024) // 1GB
 	volumeContext := map[string]string{
-		"test-key": "test-value",
+		"test-key":           "test-value",
+		efcCacheRefAttribute: "default/cache-a/data",
 	}
 
 	result := createVolumeResponse(fileSetID, bmcpfsID, volSizeBytes, volumeContext)
@@ -152,6 +153,7 @@ func TestCreateVolumeResponse(t *testing.T) {
 	assert.Equal(t, "bmcpfs", result.VolumeContext[VolumeType])
 	assert.Equal(t, "fset-123", result.VolumeContext[FileSetID])
 	assert.Equal(t, "test-value", result.VolumeContext["test-key"])
+	assert.Equal(t, "default/cache-a/data", result.VolumeContext[efcCacheRefAttribute])
 }
 
 func TestParseNodeID(t *testing.T) {
@@ -232,18 +234,20 @@ func TestParseNodeID(t *testing.T) {
 
 func TestUpdateVolumeContext(t *testing.T) {
 	inputContext := map[string]string{
-		"test-key":                                 "test-value",  // should keep
-		"csi.alibabacloud.com/lastApply":           "some-value",  // should remove
-		common.PVNameKey:                           "pv-name",     // should remove
-		common.PVCNameKey:                          "pvc-name",    // should remove
-		common.PVCNamespaceKey:                     "namespace",   // should remove
-		"csi.alibabacloud.com/storage-provisioner": "provisioner", // should remove
+		"test-key":                                 "test-value",           // should keep
+		efcCacheRefAttribute:                       "default/cache-a/data", // should keep
+		"csi.alibabacloud.com/lastApply":           "some-value",           // should remove
+		common.PVNameKey:                           "pv-name",              // should remove
+		common.PVCNameKey:                          "pvc-name",             // should remove
+		common.PVCNamespaceKey:                     "namespace",            // should remove
+		"csi.alibabacloud.com/storage-provisioner": "provisioner",          // should remove
 	}
 
 	result := updateVolumeContext(inputContext)
 
 	// Check that values we want to keep are still there
 	assert.Equal(t, "test-value", result["test-key"])
+	assert.Equal(t, "default/cache-a/data", result[efcCacheRefAttribute])
 
 	// Check that values we want to remove are gone
 	_, ok := result["csi.alibabacloud.com/lastApply"]

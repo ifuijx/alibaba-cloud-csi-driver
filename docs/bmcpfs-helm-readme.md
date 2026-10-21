@@ -353,6 +353,23 @@ spec:
   volumeName: bmcpfs-static-pv
 ```
 
+### EFC Cache
+
+To use an `EFCCache` managed by the EFC operator, set one volume attribute on the PV (or one parameter on the StorageClass):
+
+```yaml
+volumeAttributes:
+  efcCacheRef: "<namespace>/<cache>/<source>"
+```
+
+All three components must be DNS labels. The referenced cache source must use `cpfs-vpc://` or `cpfs-pov://`, and the filesystem ID in its mount target host must equal the volume's filesystem ID (the `volumeHandle` before any `+` suffix). The mount target, network type and subpath may differ, so a VSC volume can use a cache that mounts over VPC and a `mountpointAutoSwitch` fallback keeps the cache. Cross-mount-target handshakes require an EFC build that identifies CPFS peers by filesystem ID; older builds still read correct data but lose the verified rootlist and GetNodeList. The node driver reads the `EFCCache` lazily; volumes without `efcCacheRef` do not require the EFC CRD. Installing the RBAC rule while the CRD is absent is harmless. Cache mount options and `bindtag` are driver-managed and must not be supplied in `mountOptions` when this attribute is set. Because every referenced source is CPFS, the driver also sets `g_cpfs_SizeTrusted=true`. The service domain uses the standard Kubernetes cluster domain `cluster.local`.
+
+Cache discovery uses the Service DNS result as seeds and asks a handshake-verified Cache root for its node list. The driver sets both `g_tier_DadiRootClientType=2` and `g_distributed_RootClientType=2`, enables `g_distributed_ReliableRootlistEnable`, `g_distributed_NodeListFromCacheEnable`, and `g_tier_DadiUseHashRingRootlist`, and keeps `g_tier_DadiDomainName`/`g_tier_DadiDomainPort`. CSI does not watch ConfigMaps or EndpointSlices; the Cache operator publishes membership to the Cache Pods. Generated cache options participate in `bindtag` so new discovery settings do not reuse an old DNS-only bindroot. Network policies must allow the EFC handshake/GetNodeList TCP RPC port as well as the configured cache data transport; the RPC port defaults to `rootPort + 1` (17981 for the first source).
+
+The current EFC source defaults `distributed_DomainRootlistRefreshIntervalSec` to 60 seconds, `distributed_NodeListFetchAttempts` to 3, and `distributed_GetNodeListTimeoutMs` to 1000. Peers are selected randomly from existing handshake-ready connections; the first successful nonempty reply is merged with DNS seeds. A failed or empty reply falls back to the current DNS seeds, not a guarantee that the previous full list is retained. The root returns its locally known ring, not an API-server snapshot; scale-down convergence and DNS/RPC load need testing per EFC instance, not per CSI Pod. `g_distributed_DomainRootlistRefreshIntervalSec` can be supplied in `mountOptions` for tuning; lowering it increases both discovery traffic and refresh frequency.
+
+Upgrade the EFC package in the **alinas mount-proxy** as well as the Cache image before using these flags. Updating only the CSI plugin or Cache Pod cannot upgrade already mounted client processes. The default RPM versions in `VERSIONS` and `build/mount-proxy/Dockerfile` predate this feature and need a published, GetNodeList-capable replacement for the target architecture; do not deploy the old `ali-csi-alinas-ef4310b` image with the new options. Recreate PV/PVC mounts with the new client image to apply the changed bindroot configuration. This discovery change does not perform CPFS-to-VSC attachment or change backend VPC/VSC selection.
+
 ### Using BMCPFS in Pods
 
 Deploy a pod that uses the BMCPFS volume:

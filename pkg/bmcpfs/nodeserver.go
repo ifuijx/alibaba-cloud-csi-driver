@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cloud/metadata"
@@ -46,6 +47,12 @@ type nodeServer struct {
 	// credsRoot is where per-volume EFC credential files live; a field so
 	// tests can redirect it away from the /run/cnfs hostPath.
 	credsRoot string
+
+	// The EFCCache API client is initialized only for volumes that opt in via
+	// efcCacheRef. Direct volumes therefore do not depend on the CRD or API.
+	cacheGetterMu      sync.Mutex
+	cacheGetter        efcCacheGetter
+	cacheGetterFactory func() (efcCacheGetter, error)
 }
 
 const (
@@ -160,11 +167,10 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 
-	var (
-		mountOptions = req.VolumeCapability.GetMount().GetMountFlags()
-		networkType  = req.PublishContext[_networkType]
-		source       string
-	)
+	userMountOptions := append([]string(nil), req.VolumeCapability.GetMount().GetMountFlags()...)
+	mountOptions := append([]string(nil), userMountOptions...)
+	networkType := req.PublishContext[_networkType]
+	var source string
 	if err := validateCredentialMountOptions(mountOptions); err != nil {
 		return nil, err
 	}
@@ -188,16 +194,37 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		mountOptions = append(mountOptions, "g_lease_Enable=false")
 	}
 
-	if path := req.VolumeContext[_path]; path != "" {
-		source = fmt.Sprintf("%s:%s", source, path)
+	var cacheConfig *efcCacheMountConfig
+	if cacheRef := req.VolumeContext[efcCacheRefAttribute]; cacheRef != "" {
+		if err := validateCacheManagedMountOptions(userMountOptions); err != nil {
+			return nil, err
+		}
+		filesystemID, _ := parseVolumeHandle(req.VolumeId)
+		resolved, err := ns.resolveEFCCache(ctx, cacheRef, filesystemID)
+		if err != nil {
+			return nil, err
+		}
+		cacheConfig = &resolved
 	}
-	klog.InfoS("Mounting mount target", "targetPath", req.TargetPath, "source", source)
 
 	authOptions, err := ns.prepareAuthMountOptions(req)
 	if err != nil {
 		return nil, err
 	}
 	mountOptions = append(mountOptions, authOptions...)
+	if cacheConfig != nil {
+		mountOptions = append(mountOptions, cacheMountOptions(*cacheConfig)...)
+		bindTag, err := cacheBindTag(source, networkType, *cacheConfig, userMountOptions, authOptions)
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		mountOptions = append(mountOptions, "bindtag="+bindTag)
+	}
+
+	if path := req.VolumeContext[_path]; path != "" {
+		source = fmt.Sprintf("%s:%s", source, path)
+	}
+	klog.InfoS("Mounting mount target", "targetPath", req.TargetPath, "source", source)
 
 	mountOptions = append(mountOptions, "efc,protocol=efc,fstype=cpfs")
 	err = ns.mounter.Mount(source, req.TargetPath, "alinas", mountOptions)
